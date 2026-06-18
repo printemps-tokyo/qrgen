@@ -1,0 +1,32 @@
+[package]
+name = "qrgen"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Generate QR codes locally as PNG, SVG, or terminal art. Fast Rust CLI."
+authors = ["printemps.tokyo <develop@printemps.tokyo>"]
+repository = "https://github.com/printemps-tokyo/qrgen"
+homepage = "https://github.com/printemps-tokyo/qrgen"
+readme = "README.md"
+keywords = ["qrcode", "qr", "cli", "png", "svg"]
+categories = ["command-line-utilities", "multimedia::images"]
+
+[[bin]]
+name = "qrgen"
+path = "src/main.rs"
+
+[lib]
+name = "qrgen"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+qrcode = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
