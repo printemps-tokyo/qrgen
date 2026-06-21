@@ -22,7 +22,7 @@ cargo install --git https://github.com/printemps-tokyo/qrgen
 cargo install --path .
 ```
 
-Prebuilt binaries are attached to each [release](https://github.com/printemps-tokyo/qrgen/releases).
+Prebuilt binaries will be attached to each [release](https://github.com/printemps-tokyo/qrgen/releases) once a version is tagged.
 
 ## Usage
 
