@@ -111,6 +111,29 @@ fn compact_halves_terminal_output_lines() {
 }
 
 #[test]
+fn rejects_compact_combined_with_output_file() {
+    let dir = std::env::temp_dir().join("qrgen-cli-test-compact");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    let path = dir.join("qr.png");
+    std::fs::remove_file(&path).ok();
+    let out = qrgen()
+        .args(["text", "hi", "--compact", "--output"])
+        .arg(&path)
+        .output()
+        .expect("failed to run qrgen");
+    assert!(
+        !out.status.success(),
+        "--compact with --output should be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--compact applies to terminal output only"),
+        "stderr: {stderr}"
+    );
+    assert!(!path.exists(), "no file should be written");
+}
+
+#[test]
 fn text_dash_reads_data_from_stdin() {
     let piped = run_with_stdin(&["text", "-"], b"https://printemps.tokyo\n");
     assert!(piped.status.success());

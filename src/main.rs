@@ -84,6 +84,17 @@ struct OutputOpts {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // --compact only affects terminal art; combined with a file output it
+    // would be silently ignored, so reject the combination up front (before
+    // any stdin read or file write happens).
+    let opts = match &cli.command {
+        Command::Text { out, .. } | Command::Wifi { out, .. } => out,
+    };
+    if opts.compact && opts.output.is_some() {
+        bail!("--compact applies to terminal output only; remove -o or --compact");
+    }
+
     let (data, out) = match cli.command {
         Command::Text { data, out } => (resolve_text_data(data)?, out),
         Command::Wifi {
