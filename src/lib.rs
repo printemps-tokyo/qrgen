@@ -130,7 +130,8 @@ fn escape_wifi(s: &str) -> String {
 }
 
 /// Render the matrix to an RGB PNG image buffer. `scale` is the pixel size of
-/// each module and `margin` the quiet-zone width in modules (both >= 0).
+/// each module (clamped to at least 1) and `margin` the quiet-zone width in
+/// modules.
 pub fn render_png(
     matrix: &Matrix,
     scale: usize,
@@ -138,6 +139,8 @@ pub fn render_png(
     fg: [u8; 3],
     bg: [u8; 3],
 ) -> RgbImage {
+    // Defensive guard: a zero scale would produce an empty, unscannable image.
+    let scale = scale.max(1);
     let total = matrix.width + 2 * margin;
     let dim = (total * scale).max(1) as u32;
     let mut img = RgbImage::from_pixel(dim, dim, Rgb(bg));
@@ -171,6 +174,8 @@ pub fn render_svg(
     fg: [u8; 3],
     bg: [u8; 3],
 ) -> String {
+    // Defensive guard: a zero scale would collapse the document to 1x1 px.
+    let scale = scale.max(1);
     let total = matrix.width + 2 * margin;
     let px = (total * scale).max(1);
     let mut s = String::new();
@@ -299,6 +304,18 @@ mod tests {
         assert_eq!(*img.get_pixel(3, 3), Rgb([0, 0, 0]));
         // The quiet zone (top-left corner) stays background.
         assert_eq!(*img.get_pixel(0, 0), Rgb([255, 255, 255]));
+    }
+
+    #[test]
+    fn render_guards_clamp_zero_scale_to_one() {
+        let img = render_png(&checker(), 0, 0, [0, 0, 0], [255, 255, 255]);
+        // scale 0 is clamped to 1: 2 modules with no margin -> 2x2 px.
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 2);
+        assert_eq!(*img.get_pixel(0, 0), Rgb([0, 0, 0]));
+
+        let svg = render_svg(&checker(), 0, 0, [0, 0, 0], [255, 255, 255]);
+        assert!(svg.contains("width=\"2\" height=\"2\""));
     }
 
     #[test]

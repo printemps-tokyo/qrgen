@@ -59,12 +59,12 @@ struct OutputOpts {
     #[arg(long, default_value = "m")]
     ec: String,
 
-    /// Module size in pixels for PNG / SVG output.
-    #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(usize))]
+    /// Module size in pixels for PNG / SVG output (1-256).
+    #[arg(long, default_value_t = 8, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=256))]
     scale: usize,
 
-    /// Quiet-zone (margin) width in modules.
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(usize))]
+    /// Quiet-zone (margin) width in modules (0-64).
+    #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(0..=64))]
     margin: usize,
 
     /// Foreground (dark module) color as hex.
