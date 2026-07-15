@@ -95,7 +95,7 @@ use qrgen::{encode, render_svg, build_wifi_payload};
 use qrcode::EcLevel;
 
 let matrix = encode(b"https://printemps.tokyo", EcLevel::M)?;
-let svg = render_svg(&matrix, 8, 4, [0, 0, 0], [255, 255, 255]);
+let svg = render_svg(&matrix, 8, 4, [0, 0, 0], [255, 255, 255])?;
 
 let payload = build_wifi_payload("Cafe", Some("latte123"), "wpa", false)?;
 let wifi = encode(payload.as_bytes(), EcLevel::M)?;

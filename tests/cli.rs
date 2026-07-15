@@ -68,6 +68,28 @@ fn accepts_scale_and_margin_at_bounds() {
 }
 
 #[test]
+fn rejects_output_dimension_over_the_cap() {
+    // Even a version-1 QR (21 modules) at the CLI maxima is
+    // (21 + 2*64) * 256 = 38144 px, past the 32768 px cap.
+    let dir = std::env::temp_dir().join("qrgen-cli-test-cap");
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    let path = dir.join("too-big.png");
+    let out = qrgen()
+        .args(["text", "hi", "--scale", "256", "--margin", "64"])
+        .arg("--output")
+        .arg(&path)
+        .output()
+        .expect("failed to run qrgen");
+    assert!(!out.status.success(), "oversized output should be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("reduce --scale or --margin"),
+        "stderr: {stderr}"
+    );
+    assert!(!path.exists(), "no file should be written");
+}
+
+#[test]
 fn text_dash_reads_data_from_stdin() {
     let piped = run_with_stdin(&["text", "-"], b"https://printemps.tokyo\n");
     assert!(piped.status.success());

@@ -129,20 +129,37 @@ fn escape_wifi(s: &str) -> String {
     out
 }
 
+/// Maximum width/height of a rendered PNG or SVG in pixels. Anything larger
+/// would allocate gigabytes of pixel data for no practical benefit.
+pub const MAX_OUTPUT_DIM: usize = 32_768;
+
+/// Compute the total output dimension `(modules + 2 * margin) * scale` in
+/// pixels, rejecting anything above [`MAX_OUTPUT_DIM`].
+fn checked_output_dim(matrix: &Matrix, scale: usize, margin: usize) -> Result<usize> {
+    let total = matrix.width + 2 * margin;
+    let px = total
+        .checked_mul(scale)
+        .filter(|&px| px <= MAX_OUTPUT_DIM)
+        .ok_or_else(|| {
+            let n = total.saturating_mul(scale);
+            anyhow!("output would be {n}x{n} px; reduce --scale or --margin (max {MAX_OUTPUT_DIM})")
+        })?;
+    Ok(px.max(1))
+}
+
 /// Render the matrix to an RGB PNG image buffer. `scale` is the pixel size of
 /// each module (clamped to at least 1) and `margin` the quiet-zone width in
-/// modules.
+/// modules. Fails if the total output dimension exceeds [`MAX_OUTPUT_DIM`].
 pub fn render_png(
     matrix: &Matrix,
     scale: usize,
     margin: usize,
     fg: [u8; 3],
     bg: [u8; 3],
-) -> RgbImage {
+) -> Result<RgbImage> {
     // Defensive guard: a zero scale would produce an empty, unscannable image.
     let scale = scale.max(1);
-    let total = matrix.width + 2 * margin;
-    let dim = (total * scale).max(1) as u32;
+    let dim = checked_output_dim(matrix, scale, margin)? as u32;
     let mut img = RgbImage::from_pixel(dim, dim, Rgb(bg));
     for y in 0..matrix.width {
         for x in 0..matrix.width {
@@ -158,7 +175,7 @@ pub fn render_png(
             }
         }
     }
-    img
+    Ok(img)
 }
 
 fn hex(c: [u8; 3]) -> String {
@@ -166,18 +183,19 @@ fn hex(c: [u8; 3]) -> String {
 }
 
 /// Render the matrix to a standalone SVG document. Dark modules are emitted as
-/// a single `<path>` over a background rectangle for a compact result.
+/// a single `<path>` over a background rectangle for a compact result. Fails
+/// if the total output dimension exceeds [`MAX_OUTPUT_DIM`].
 pub fn render_svg(
     matrix: &Matrix,
     scale: usize,
     margin: usize,
     fg: [u8; 3],
     bg: [u8; 3],
-) -> String {
+) -> Result<String> {
     // Defensive guard: a zero scale would collapse the document to 1x1 px.
     let scale = scale.max(1);
     let total = matrix.width + 2 * margin;
-    let px = (total * scale).max(1);
+    let px = checked_output_dim(matrix, scale, margin)?;
     let mut s = String::new();
     s.push_str(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{px}\" height=\"{px}\" \
@@ -196,7 +214,7 @@ viewBox=\"0 0 {total} {total}\" shape-rendering=\"crispEdges\">",
         }
     }
     s.push_str("\"/></svg>\n");
-    s
+    Ok(s)
 }
 
 /// Render the matrix as ANSI terminal art using black/white background blocks,
@@ -296,7 +314,7 @@ mod tests {
 
     #[test]
     fn render_png_sizes_and_colors_modules() {
-        let img = render_png(&checker(), 3, 1, [0, 0, 0], [255, 255, 255]);
+        let img = render_png(&checker(), 3, 1, [0, 0, 0], [255, 255, 255]).unwrap();
         // total modules = 2 + 2*1 = 4, each 3px -> 12px square.
         assert_eq!(img.width(), 12);
         assert_eq!(img.height(), 12);
@@ -308,19 +326,48 @@ mod tests {
 
     #[test]
     fn render_guards_clamp_zero_scale_to_one() {
-        let img = render_png(&checker(), 0, 0, [0, 0, 0], [255, 255, 255]);
+        let img = render_png(&checker(), 0, 0, [0, 0, 0], [255, 255, 255]).unwrap();
         // scale 0 is clamped to 1: 2 modules with no margin -> 2x2 px.
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
         assert_eq!(*img.get_pixel(0, 0), Rgb([0, 0, 0]));
 
-        let svg = render_svg(&checker(), 0, 0, [0, 0, 0], [255, 255, 255]);
+        let svg = render_svg(&checker(), 0, 0, [0, 0, 0], [255, 255, 255]).unwrap();
         assert!(svg.contains("width=\"2\" height=\"2\""));
     }
 
     #[test]
+    fn render_rejects_output_over_the_dimension_cap() {
+        // A version-40 QR (177 modules) at the CLI maxima would be
+        // (177 + 2*64) * 256 = 78080 px square (~18 GB of RGB): must error
+        // instead of allocating.
+        let m = Matrix {
+            width: 177,
+            dark: vec![false; 177 * 177],
+        };
+        let err = render_png(&m, 256, 64, [0, 0, 0], [255, 255, 255]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("78080x78080"), "message: {msg}");
+        assert!(msg.contains("32768"), "message: {msg}");
+        assert!(render_svg(&m, 256, 64, [0, 0, 0], [255, 255, 255]).is_err());
+    }
+
+    #[test]
+    fn render_allows_output_up_to_the_dimension_cap() {
+        // Exactly at the cap: 2 modules * 16384 px = 32768. The SVG document
+        // stays tiny, so the boundary is exercised without a huge allocation.
+        let svg = render_svg(&checker(), 16384, 0, [0, 0, 0], [255, 255, 255]).unwrap();
+        assert!(svg.contains("width=\"32768\" height=\"32768\""));
+        // One pixel step past the cap fails.
+        assert!(render_svg(&checker(), 16385, 0, [0, 0, 0], [255, 255, 255]).is_err());
+        // A large but sane PNG still renders: (2 + 2*4) * 256 = 2560 px.
+        let img = render_png(&checker(), 256, 4, [0, 0, 0], [255, 255, 255]).unwrap();
+        assert_eq!(img.width(), 2560);
+    }
+
+    #[test]
     fn render_svg_has_viewbox_and_one_path_per_dark_module() {
-        let svg = render_svg(&checker(), 8, 1, [0, 0, 0], [255, 255, 255]);
+        let svg = render_svg(&checker(), 8, 1, [0, 0, 0], [255, 255, 255]).unwrap();
         assert!(svg.contains("viewBox=\"0 0 4 4\""));
         assert!(svg.contains("width=\"32\"")); // 4 modules * 8px
         assert!(svg.contains("M1 1h1v1h-1z")); // dark (0,0) offset by margin 1

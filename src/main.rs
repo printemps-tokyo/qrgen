@@ -101,12 +101,12 @@ fn main() -> Result<()> {
     match &out.output {
         Some(path) => match format_from_path(path)? {
             OutFormat::Png => {
-                render_png(&matrix, out.scale, out.margin, fg, bg)
+                render_png(&matrix, out.scale, out.margin, fg, bg)?
                     .save(path)
                     .with_context(|| format!("failed to write {}", path.display()))?;
             }
             OutFormat::Svg => {
-                let svg = render_svg(&matrix, out.scale, out.margin, fg, bg);
+                let svg = render_svg(&matrix, out.scale, out.margin, fg, bg)?;
                 std::fs::write(path, svg)
                     .with_context(|| format!("failed to write {}", path.display()))?;
             }
