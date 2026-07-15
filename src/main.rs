@@ -1,9 +1,9 @@
 //! Command-line entry point for qrgen.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use qrgen::{
@@ -23,7 +23,8 @@ struct Cli {
 enum Command {
     /// Encode arbitrary text or a URL.
     Text {
-        /// The text or URL to encode.
+        /// The text or URL to encode. Pass "-" to read it from stdin
+        /// (keeps secrets out of your shell history).
         data: String,
         #[command(flatten)]
         out: OutputOpts,
@@ -79,7 +80,7 @@ struct OutputOpts {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let (data, out) = match cli.command {
-        Command::Text { data, out } => (data, out),
+        Command::Text { data, out } => (resolve_text_data(data)?, out),
         Command::Wifi {
             ssid,
             password,
@@ -121,4 +122,53 @@ fn main() -> Result<()> {
 
     eprintln!("qrgen: wrote {}", out.output.as_ref().unwrap().display());
     Ok(())
+}
+
+/// Resolve the `text` data argument: `-` means read the data from stdin,
+/// with one trailing newline trimmed.
+fn resolve_text_data(data: String) -> Result<String> {
+    if data != "-" {
+        return Ok(data);
+    }
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("failed to read data from stdin")?;
+    trim_trailing_newline(&mut buf);
+    if buf.is_empty() {
+        bail!("no data received on stdin");
+    }
+    Ok(buf)
+}
+
+/// Remove a single trailing newline (`\n` or `\r\n`), as appended by `echo`
+/// or line-buffered pipes. Interior newlines are preserved.
+fn trim_trailing_newline(s: &mut String) {
+    if s.ends_with('\n') {
+        s.pop();
+        if s.ends_with('\r') {
+            s.pop();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trim_trailing_newline;
+
+    fn trimmed(input: &str) -> String {
+        let mut s = input.to_string();
+        trim_trailing_newline(&mut s);
+        s
+    }
+
+    #[test]
+    fn trims_one_trailing_newline_only() {
+        assert_eq!(trimmed("https://example.com\n"), "https://example.com");
+        assert_eq!(trimmed("secret\r\n"), "secret");
+        assert_eq!(trimmed("two\n\n"), "two\n");
+        assert_eq!(trimmed("plain"), "plain");
+        assert_eq!(trimmed("multi\nline\n"), "multi\nline");
+        assert_eq!(trimmed(""), "");
+    }
 }

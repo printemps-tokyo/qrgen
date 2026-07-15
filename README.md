@@ -40,11 +40,15 @@ qrgen text "https://printemps.tokyo"               # print to the terminal
 qrgen text "https://printemps.tokyo" -o qr.png     # 8px modules PNG
 qrgen text "hello world" -o qr.svg                 # scalable SVG
 qrgen text "https://example.com" -o qr.png --scale 12 --ec h --fg "#1a1a2e"
+echo "https://printemps.tokyo" | qrgen text -           # read the data from stdin
 ```
 
 When `--output` is omitted, the code is printed to the terminal using black and
 white background blocks, so it scans regardless of your terminal's color theme.
 With `--output`, the file extension picks the format: `.png` or `.svg`.
+
+Pass `-` as the data to read it from stdin (one trailing newline is trimmed).
+This keeps secrets such as tokens or passwords out of your shell history.
 
 ### wifi
 
