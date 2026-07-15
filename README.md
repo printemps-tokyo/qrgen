@@ -37,6 +37,7 @@ Run `qrgen --help` or `qrgen <command> --help` for the full option list.
 
 ```bash
 qrgen text "https://printemps.tokyo"               # print to the terminal
+qrgen text "https://printemps.tokyo" --compact     # half-height terminal art
 qrgen text "https://printemps.tokyo" -o qr.png     # 8px modules PNG
 qrgen text "hello world" -o qr.svg                 # scalable SVG
 qrgen text "https://example.com" -o qr.png --scale 12 --ec h --fg "#1a1a2e"
@@ -46,6 +47,8 @@ echo "https://printemps.tokyo" | qrgen text -           # read the data from std
 When `--output` is omitted, the code is printed to the terminal using black and
 white background blocks, so it scans regardless of your terminal's color theme.
 With `--output`, the file extension picks the format: `.png` or `.svg`.
+Add `--compact` to pack two modules into each text row with half-block
+characters, so large codes fit small terminal windows.
 
 Pass `-` as the data to read it from stdin (one trailing newline is trimmed).
 This keeps secrets such as tokens or passwords out of your shell history.
@@ -78,6 +81,7 @@ qrgen wifi --ssid "FreeSpot" --auth nopass -o open.png   # open network
 | `--margin <n>` | Quiet-zone width in modules (default `4`) |
 | `--fg <hex>` | Foreground (dark module) color (default `000000`) |
 | `--bg <hex>` | Background color (default `ffffff`) |
+| `--compact` | Terminal output only: half-height art using half-block characters |
 
 Colors accept 3- or 6-digit hex, with or without a leading `#`.
 

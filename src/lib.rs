@@ -239,6 +239,41 @@ pub fn render_ansi(matrix: &Matrix, margin: usize) -> String {
     s
 }
 
+/// Render the matrix as compact ANSI terminal art, packing two vertical
+/// modules into each text row with the upper-half-block character (U+2580).
+/// The foreground color paints the top module and the background color the
+/// bottom one, using the same black/white palette as [`render_ansi`] so the
+/// code scans regardless of the terminal's color theme. When the total height
+/// is odd, the missing bottom half of the last row is treated as light.
+/// `margin` is the quiet-zone width in modules.
+pub fn render_ansi_compact(matrix: &Matrix, margin: usize) -> String {
+    let total = matrix.width + 2 * margin;
+    let module_dark = |x: usize, y: usize| {
+        x >= margin
+            && y >= margin
+            && x < margin + matrix.width
+            && y < margin + matrix.width
+            && matrix.is_dark(x - margin, y - margin)
+    };
+    let mut s = String::new();
+    for y in (0..total).step_by(2) {
+        for x in 0..total {
+            let top = module_dark(x, y);
+            // Past the bottom edge (odd total) counts as light.
+            let bottom = y + 1 < total && module_dark(x, y + 1);
+            s.push_str(match (top, bottom) {
+                (true, true) => "\x1b[30;40m",
+                (true, false) => "\x1b[30;47m",
+                (false, true) => "\x1b[37;40m",
+                (false, false) => "\x1b[37;47m",
+            });
+            s.push('\u{2580}');
+        }
+        s.push_str("\x1b[0m\n");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +408,63 @@ mod tests {
         assert!(svg.contains("M1 1h1v1h-1z")); // dark (0,0) offset by margin 1
         assert!(svg.contains("M2 2h1v1h-1z")); // dark (1,1) offset by margin 1
         assert!(svg.contains("fill=\"#000000\""));
+    }
+
+    #[test]
+    fn render_ansi_compact_packs_two_rows_per_line() {
+        // 2x2 checkerboard, no margin: one line pairing rows 0 and 1.
+        // Column 0 is dark-over-light, column 1 light-over-dark.
+        let art = render_ansi_compact(&checker(), 0);
+        assert_eq!(art, "\x1b[30;47m\u{2580}\x1b[37;40m\u{2580}\x1b[0m\n");
+    }
+
+    #[test]
+    fn render_ansi_compact_covers_all_combinations_and_odd_height() {
+        // 3x3 pattern chosen so the first line hits dark/dark, dark/light and
+        // light/dark, and the odd last row pairs with an implicit light row.
+        let m = Matrix {
+            width: 3,
+            dark: vec![
+                true, true, false, // row 0
+                true, false, true, // row 1
+                false, true, false, // row 2
+            ],
+        };
+        let art = render_ansi_compact(&m, 0);
+        assert_eq!(
+            art,
+            concat!(
+                "\x1b[30;40m\u{2580}\x1b[30;47m\u{2580}\x1b[37;40m\u{2580}\x1b[0m\n",
+                "\x1b[37;47m\u{2580}\x1b[30;47m\u{2580}\x1b[37;47m\u{2580}\x1b[0m\n",
+            )
+        );
+    }
+
+    #[test]
+    fn render_ansi_compact_margin_stays_light() {
+        // Margin 1 around the checkerboard: total 4 -> 2 lines, and the
+        // outer quiet zone renders as light-over-light cells.
+        let art = render_ansi_compact(&checker(), 1);
+        let lines: Vec<&str> = art.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("\x1b[37;47m\u{2580}")); // top-left corner
+        assert!(lines[1].ends_with("\x1b[37;47m\u{2580}\x1b[0m")); // bottom-right corner
+    }
+
+    #[test]
+    fn render_ansi_compact_halves_the_rows_of_a_real_qr() {
+        let m = encode(b"https://printemps.tokyo", EcLevel::M).unwrap();
+        let margin = 4;
+        let total = m.width + 2 * margin;
+        let normal_lines = render_ansi(&m, margin).lines().count();
+        let compact = render_ansi_compact(&m, margin);
+        let compact_lines: Vec<&str> = compact.lines().collect();
+        assert_eq!(normal_lines, total);
+        assert_eq!(compact_lines.len(), total.div_ceil(2));
+        // Every line carries one half-block character per module column.
+        for line in &compact_lines {
+            assert_eq!(line.matches('\u{2580}').count(), total);
+        }
     }
 
     #[test]

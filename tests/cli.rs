@@ -90,6 +90,27 @@ fn rejects_output_dimension_over_the_cap() {
 }
 
 #[test]
+fn compact_halves_terminal_output_lines() {
+    let normal = qrgen()
+        .args(["text", "https://printemps.tokyo"])
+        .output()
+        .expect("failed to run qrgen");
+    assert!(normal.status.success());
+    let compact = qrgen()
+        .args(["text", "https://printemps.tokyo", "--compact"])
+        .output()
+        .expect("failed to run qrgen");
+    assert!(compact.status.success());
+
+    let normal_lines = normal.stdout.iter().filter(|&&b| b == b'\n').count();
+    let compact_lines = compact.stdout.iter().filter(|&&b| b == b'\n').count();
+    assert!(normal_lines > 0);
+    assert_eq!(compact_lines, normal_lines.div_ceil(2));
+    let art = String::from_utf8_lossy(&compact.stdout);
+    assert!(art.contains('\u{2580}'), "half-block characters expected");
+}
+
+#[test]
 fn text_dash_reads_data_from_stdin() {
     let piped = run_with_stdin(&["text", "-"], b"https://printemps.tokyo\n");
     assert!(piped.status.success());

@@ -7,8 +7,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 
 use qrgen::{
-    build_wifi_payload, encode, format_from_path, parse_ec, parse_rgb, render_ansi, render_png,
-    render_svg, OutFormat,
+    build_wifi_payload, encode, format_from_path, parse_ec, parse_rgb, render_ansi,
+    render_ansi_compact, render_png, render_svg, OutFormat,
 };
 
 /// Generate QR codes locally as PNG, SVG, or terminal art.
@@ -75,6 +75,11 @@ struct OutputOpts {
     /// Background color as hex.
     #[arg(long, default_value = "ffffff")]
     bg: String,
+
+    /// Terminal output only: pack two modules per text row using half-block
+    /// characters, halving the height so large codes fit small terminals.
+    #[arg(long)]
+    compact: bool,
 }
 
 fn main() -> Result<()> {
@@ -114,7 +119,12 @@ fn main() -> Result<()> {
         },
         None => {
             // No file: print scannable terminal art to stdout.
-            print!("{}", render_ansi(&matrix, out.margin));
+            let art = if out.compact {
+                render_ansi_compact(&matrix, out.margin)
+            } else {
+                render_ansi(&matrix, out.margin)
+            };
+            print!("{art}");
             std::io::stdout().flush().ok();
             return Ok(());
         }
