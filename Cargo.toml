@@ -2,6 +2,7 @@
 name = "qrgen"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 license = "MIT"
 description = "Generate QR codes locally as PNG, SVG, or terminal art. Fast Rust CLI."
 authors = ["printemps.tokyo <develop@printemps.tokyo>"]
