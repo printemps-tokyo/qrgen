@@ -129,6 +129,440 @@ fn escape_wifi(s: &str) -> String {
     out
 }
 
+/// Contact details for a vCard 3.0 payload, the form zxing documents for QR
+/// codes and phones' cameras offer to add to contacts.
+#[derive(Debug, Clone, Default)]
+pub struct VCard {
+    /// Display name (FN).
+    pub name: String,
+    /// Family and given names (N); without them the display name is used as
+    /// the family name, since the order of names differs by language.
+    pub family: Option<String>,
+    pub given: Option<String>,
+    pub org: Option<String>,
+    pub title: Option<String>,
+    pub tel: Vec<String>,
+    pub email: Vec<String>,
+    pub url: Option<String>,
+    /// Street address, as one line (the street part of ADR).
+    pub address: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Escape a vCard / iCalendar text value: backslash, semicolon, comma and
+/// line breaks (RFC 2426 section 4, RFC 5545 section 3.3.11).
+fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            ';' => out.push_str("\\;"),
+            ',' => out.push_str("\\,"),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push_str("\\n");
+            }
+            '\n' => out.push_str("\\n"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Build a vCard 3.0 payload, lines ending in CRLF as the format requires.
+pub fn build_vcard(v: &VCard) -> Result<String> {
+    if v.name.trim().is_empty() {
+        bail!("--name must not be empty");
+    }
+    let mut lines = vec!["BEGIN:VCARD".to_string(), "VERSION:3.0".to_string()];
+    let family = v.family.as_deref().unwrap_or(&v.name);
+    let given = v.given.as_deref().unwrap_or("");
+    lines.push(format!(
+        "N:{};{};;;",
+        escape_text(family),
+        escape_text(given)
+    ));
+    lines.push(format!("FN:{}", escape_text(&v.name)));
+    if let Some(org) = &v.org {
+        lines.push(format!("ORG:{}", escape_text(org)));
+    }
+    if let Some(title) = &v.title {
+        lines.push(format!("TITLE:{}", escape_text(title)));
+    }
+    for tel in &v.tel {
+        lines.push(format!("TEL:{}", escape_text(tel)));
+    }
+    for email in &v.email {
+        lines.push(format!("EMAIL;TYPE=INTERNET:{}", escape_text(email)));
+    }
+    if let Some(url) = &v.url {
+        // URL is a URI value, not text: it is not escaped.
+        lines.push(format!("URL:{url}"));
+    }
+    if let Some(adr) = &v.address {
+        lines.push(format!("ADR:;;{};;;;", escape_text(adr)));
+    }
+    if let Some(note) = &v.note {
+        lines.push(format!("NOTE:{}", escape_text(note)));
+    }
+    lines.push("END:VCARD".to_string());
+    Ok(lines.join("\r\n") + "\r\n")
+}
+
+/// A calendar event for a bare VEVENT payload, the form zxing documents.
+#[derive(Debug, Clone, Default)]
+pub struct Event {
+    pub summary: String,
+    /// `YYYY-MM-DD` (all day), or `YYYY-MM-DD HH:MM[:SS]` / `...THH:MM[:SS]`,
+    /// local time, or UTC with a trailing `Z`.
+    pub start: String,
+    /// Same forms as `start`; defaults to the next day (all day) or one hour
+    /// later.
+    pub end: Option<String>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+}
+
+/// A parsed event time: a date, or a date and time, local or UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EventTime {
+    /// Days since 1970-01-01.
+    days: i64,
+    /// Seconds into the day; None for an all-day date.
+    secs: Option<u32>,
+    utc: bool,
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m as i64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+/// Parse an event time; see [`Event::start`] for the accepted forms.
+pub fn parse_event_time(input: &str) -> Result<EventTime> {
+    let s = input.trim();
+    let (s, utc) = match s.strip_suffix('Z').or_else(|| s.strip_suffix('z')) {
+        Some(rest) => (rest, true),
+        None => (s, false),
+    };
+    let bad = || anyhow!("invalid time {input:?} (use YYYY-MM-DD or YYYY-MM-DD HH:MM, Z for UTC)");
+    let (date, time) = match s.find([' ', 'T', 't']) {
+        Some(i) => (&s[..i], Some(&s[i + 1..])),
+        None => (s, None),
+    };
+    let parts: Vec<&str> = date.split('-').collect();
+    let [y, m, d] = parts.as_slice() else {
+        return Err(bad());
+    };
+    if y.len() != 4 || m.len() != 2 || d.len() != 2 {
+        return Err(bad());
+    }
+    let (y, m, d): (i64, u32, u32) = (
+        y.parse().map_err(|_| bad())?,
+        m.parse().map_err(|_| bad())?,
+        d.parse().map_err(|_| bad())?,
+    );
+    let days = days_from_civil(y, m, d);
+    // Reject dates such as 2026-02-30 that would roll over.
+    if !(1..=12).contains(&m) || civil_from_days(days) != (y, m, d) {
+        return Err(bad());
+    }
+    let secs = match time {
+        None => {
+            if utc {
+                return Err(anyhow!("an all-day date takes no Z: {input:?}"));
+            }
+            None
+        }
+        Some(t) => {
+            let f: Vec<&str> = t.split(':').collect();
+            if !(2..=3).contains(&f.len()) || f.iter().any(|x| x.len() != 2) {
+                return Err(bad());
+            }
+            let n: Vec<u32> = f
+                .iter()
+                .map(|x| x.parse().map_err(|_| bad()))
+                .collect::<Result<_>>()?;
+            let (h, mi, se) = (n[0], n[1], n.get(2).copied().unwrap_or(0));
+            if h > 23 || mi > 59 || se > 59 {
+                return Err(bad());
+            }
+            Some(h * 3600 + mi * 60 + se)
+        }
+    };
+    Ok(EventTime { days, secs, utc })
+}
+
+impl EventTime {
+    fn property(&self, name: &str) -> String {
+        let (y, m, d) = civil_from_days(self.days);
+        match self.secs {
+            None => format!("{name};VALUE=DATE:{y:04}{m:02}{d:02}"),
+            Some(t) => format!(
+                "{name}:{y:04}{m:02}{d:02}T{:02}{:02}{:02}{}",
+                t / 3600,
+                t / 60 % 60,
+                t % 60,
+                if self.utc { "Z" } else { "" }
+            ),
+        }
+    }
+
+    /// The default end: the next day for a date, one hour later for a time.
+    fn default_end(&self) -> EventTime {
+        match self.secs {
+            None => EventTime {
+                days: self.days + 1,
+                ..*self
+            },
+            Some(t) => {
+                let t = t + 3600;
+                EventTime {
+                    days: self.days + i64::from(t / 86_400),
+                    secs: Some(t % 86_400),
+                    utc: self.utc,
+                }
+            }
+        }
+    }
+}
+
+/// Build a VEVENT payload (lines ending in CRLF). Times without `Z` are
+/// floating local times, read in the scanning phone's time zone.
+pub fn build_event(e: &Event) -> Result<String> {
+    if e.summary.trim().is_empty() {
+        bail!("--summary must not be empty");
+    }
+    let start = parse_event_time(&e.start)?;
+    let end = match &e.end {
+        Some(s) => parse_event_time(s)?,
+        None => start.default_end(),
+    };
+    if start.secs.is_some() != end.secs.is_some() || start.utc != end.utc {
+        bail!("--start and --end must be the same kind of time (both dates, both local times, or both UTC)");
+    }
+    if end <= start {
+        bail!("--end must be after --start");
+    }
+    let mut lines = vec![
+        "BEGIN:VEVENT".to_string(),
+        format!("SUMMARY:{}", escape_text(&e.summary)),
+        start.property("DTSTART"),
+        end.property("DTEND"),
+    ];
+    if let Some(loc) = &e.location {
+        lines.push(format!("LOCATION:{}", escape_text(loc)));
+    }
+    if let Some(desc) = &e.description {
+        lines.push(format!("DESCRIPTION:{}", escape_text(desc)));
+    }
+    lines.push("END:VEVENT".to_string());
+    Ok(lines.join("\r\n") + "\r\n")
+}
+
+/// The square of modules a logo covers, padding included, in module units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogoBox {
+    pub x: usize,
+    pub size: usize,
+}
+
+/// Smallest and largest logo side as a fraction of the code's width. Above
+/// 0.3 the hidden area (about 9% of the modules) eats into what level H can
+/// recover (about 30% of the codewords) too far to be safe.
+pub const LOGO_FRACTION_RANGE: std::ops::RangeInclusive<f64> = 0.05..=0.3;
+
+/// The centred box a logo of `fraction` of the width covers. Its side has the
+/// width's parity, so it sits exactly in the middle.
+pub fn logo_box(width: usize, fraction: f64) -> Result<LogoBox> {
+    if !LOGO_FRACTION_RANGE.contains(&fraction) {
+        bail!(
+            "logo size must be between 5% and 30% of the code (got {:.0}%)",
+            fraction * 100.0
+        );
+    }
+    let mut size = ((width as f64) * fraction).round() as usize;
+    if size % 2 != width % 2 {
+        size += 1;
+    }
+    let size = size.max(3).min(width);
+    Ok(LogoBox {
+        x: (width - size) / 2,
+        size,
+    })
+}
+
+/// Turn every module under the logo box light, so the code is drawn around it.
+pub fn clear_logo_area(matrix: &mut Matrix, b: LogoBox) {
+    for y in b.x..b.x + b.size {
+        for x in b.x..b.x + b.size {
+            matrix.dark[y * matrix.width + x] = false;
+        }
+    }
+}
+
+/// Draw `logo` into the box (one module of padding on each side), fitted
+/// without stretching and blended over the background by its alpha.
+pub fn draw_logo_png(
+    img: &mut RgbImage,
+    logo: &image::DynamicImage,
+    b: LogoBox,
+    scale: usize,
+    margin: usize,
+) {
+    let scale = scale.max(1);
+    let inner = (b.size.saturating_sub(2)).max(1) * scale;
+    let rgba = logo.to_rgba8();
+    let (lw, lh) = rgba.dimensions();
+    let ratio = (inner as f64 / lw.max(1) as f64).min(inner as f64 / lh.max(1) as f64);
+    let (w, h) = (
+        ((lw as f64 * ratio).round() as u32).max(1),
+        ((lh as f64 * ratio).round() as u32).max(1),
+    );
+    let fitted = image::imageops::resize(&rgba, w, h, image::imageops::FilterType::Lanczos3);
+    let origin = (b.x + 1 + margin) * scale;
+    let ox = origin as u32 + (inner as u32 - w) / 2;
+    let oy = origin as u32 + (inner as u32 - h) / 2;
+    for (x, y, p) in fitted.enumerate_pixels() {
+        let a = u32::from(p[3]);
+        let dst = img.get_pixel_mut(ox + x, oy + y);
+        for c in 0..3 {
+            dst[c] = ((u32::from(p[c]) * a + u32::from(dst[c]) * (255 - a)) / 255) as u8;
+        }
+    }
+}
+
+/// Standard base64 (RFC 4648) with padding, for the SVG data URI.
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// The SVG element for a PNG logo in the box (inside the padding).
+pub fn svg_logo_element(png: &[u8], b: LogoBox, margin: usize) -> String {
+    let inner = b.size.saturating_sub(2).max(1);
+    format!(
+        "<image x=\"{x}\" y=\"{x}\" width=\"{inner}\" height=\"{inner}\" preserveAspectRatio=\"xMidYMid meet\" href=\"data:image/png;base64,{}\"/>",
+        base64(png),
+        x = b.x + 1 + margin,
+    )
+}
+
+/// Parse CSV text (RFC 4180: quoted fields, doubled quotes, CRLF or LF) into
+/// rows of fields. Blank lines are skipped.
+pub fn parse_csv(text: &str) -> Result<Vec<Vec<String>>> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut rows = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    let mut line = 1usize;
+    let mut started = false;
+    while let Some(c) = chars.next() {
+        if quoted {
+            match c {
+                '"' if chars.peek() == Some(&'"') => {
+                    chars.next();
+                    field.push('"');
+                }
+                '"' => quoted = false,
+                '\n' => {
+                    line += 1;
+                    field.push('\n');
+                }
+                _ => field.push(c),
+            }
+            continue;
+        }
+        match c {
+            '"' if field.is_empty() => {
+                quoted = true;
+                started = true;
+            }
+            '"' => bail!("CSV line {line}: a quote inside an unquoted field"),
+            ',' => {
+                row.push(std::mem::take(&mut field));
+                started = true;
+            }
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' => {
+                line += 1;
+                if started || !field.is_empty() {
+                    row.push(std::mem::take(&mut field));
+                    rows.push(std::mem::take(&mut row));
+                }
+                started = false;
+            }
+            _ => {
+                field.push(c);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        bail!("CSV: a quoted field is not closed");
+    }
+    if started || !field.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+/// Whether `name` is safe as a file name stem in the output folder: no path
+/// separators, no leading dot, nothing a shell or file system treats
+/// specially.
+pub fn safe_file_stem(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
+        && name.trim() == name
+}
+
 /// Maximum width/height of a rendered PNG or SVG in pixels. Anything larger
 /// would allocate gigabytes of pixel data for no practical benefit.
 pub const MAX_OUTPUT_DIM: usize = 32_768;
@@ -474,5 +908,99 @@ mod tests {
         assert_eq!(lines.len(), 4); // 2 + 2*1
         assert!(art.contains("\x1b[40m")); // dark cells present
         assert!(art.contains("\x1b[47m")); // light cells present
+    }
+
+    #[test]
+    fn vcard_escapes_text_and_keeps_urls() {
+        let v = VCard {
+            name: "A; B".into(),
+            note: Some("line1\nline2, ok\\".into()),
+            url: Some("https://example.com/a,b".into()),
+            ..VCard::default()
+        };
+        let card = build_vcard(&v).unwrap();
+        assert!(card.contains("N:A\\; B;;;;\r\n"));
+        assert!(card.contains("FN:A\\; B\r\n"));
+        assert!(card.contains("NOTE:line1\\nline2\\, ok\\\\\r\n"));
+        assert!(card.contains("URL:https://example.com/a,b\r\n"));
+        assert!(build_vcard(&VCard::default()).is_err());
+    }
+
+    #[test]
+    fn event_times_and_defaults() {
+        let ev = |start: &str, end: Option<&str>| {
+            build_event(&Event {
+                summary: "x".into(),
+                start: start.into(),
+                end: end.map(Into::into),
+                ..Event::default()
+            })
+        };
+        assert!(ev("2026-12-31", None)
+            .unwrap()
+            .contains("DTSTART;VALUE=DATE:20261231\r\nDTEND;VALUE=DATE:20270101\r\n"));
+        assert!(ev("2026-12-31T23:30Z", None)
+            .unwrap()
+            .contains("DTSTART:20261231T233000Z\r\nDTEND:20270101T003000Z\r\n"));
+        assert!(ev("2028-02-28 10:00:15", Some("2028-02-29 09:00"))
+            .unwrap()
+            .contains("DTEND:20280229T090000\r\n"));
+        assert!(ev("2026-02-30", None).is_err());
+        assert!(ev("2026-12-01 24:00", None).is_err());
+        assert!(ev("2026-12-01 10:00", Some("2026-12-01 09:00")).is_err());
+        assert!(ev("2026-12-01 10:00", Some("2026-12-02")).is_err());
+        assert!(ev("2026-12-01 10:00Z", Some("2026-12-01 11:00")).is_err());
+        assert!(ev("2026-12-01Z", None).is_err());
+    }
+
+    #[test]
+    fn csv_quotes_and_line_endings() {
+        let rows = parse_csv("\u{feff}a,b\r\n\"x, y\",\"he said \"\"hi\"\"\"\n\n\"multi\nline\",z")
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                vec!["a".to_string(), "b".to_string()],
+                vec!["x, y".to_string(), "he said \"hi\"".to_string()],
+                vec!["multi\nline".to_string(), "z".to_string()],
+            ]
+        );
+        assert!(parse_csv("a,\"open").is_err());
+        assert!(parse_csv("a\"b").is_err());
+    }
+
+    #[test]
+    fn safe_file_stems() {
+        for ok in ["home", "card-01", "名刺 山田", "v1.2"] {
+            assert!(safe_file_stem(ok), "{ok}");
+        }
+        for bad in ["", ".hidden", "a/b", "..\\x", " lead", "a:b"] {
+            assert!(!safe_file_stem(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn logo_box_is_centred_and_bounded() {
+        let b = logo_box(25, 0.2).unwrap();
+        assert_eq!(b, LogoBox { x: 10, size: 5 });
+        assert_eq!(b.x * 2 + b.size, 25);
+        assert!(logo_box(25, 0.31).is_err());
+        let mut m = encode(b"hello", EcLevel::H).unwrap();
+        let b = logo_box(m.width, 0.3).unwrap();
+        clear_logo_area(&mut m, b);
+        assert!(!m.is_dark(b.x, b.x) && !m.is_dark(b.x + b.size - 1, b.x + b.size - 1));
+    }
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        for (input, want) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(input.as_bytes()), want);
+        }
     }
 }
