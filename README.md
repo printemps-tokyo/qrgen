@@ -22,7 +22,8 @@ cargo install --git https://github.com/printemps-tokyo/qrgen
 cargo install --path .
 ```
 
-Prebuilt binaries will be attached to each [release](https://github.com/printemps-tokyo/qrgen/releases) once a version is tagged.
+Tagged [releases](https://github.com/printemps-tokyo/qrgen/releases) carry prebuilt binaries for Linux (x86_64)
+and macOS (x86_64, Apple silicon), with SHA-256 checksums.
 
 ## Usage
 
